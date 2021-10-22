@@ -1,13 +1,16 @@
 #include "http_server.h"
 #include "logging.h"
+#include "memory.h"
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/signal.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 size_t requests_handled = 0;
 
-void handle_client_request(http_server*, http_client* client) {
+void handle_client_request(http_server* server, http_client* client) {
     log_info("%s: %p", "got client", (void*)client);
 
     bool keep_alive = false;
@@ -38,15 +41,55 @@ void handle_client_request(http_server*, http_client* client) {
         }
 
         if (strcmp(header.method, "GET") == 0) {
-
             if (strcmp(header.target, "/") == 0) {
                 char buf[] = "HELLO, WORLD!";
                 http_server_serve(client, buf, sizeof(buf) - 1, "text/plain", &err);
                 if (is_error(err)) {
                     print_error(err);
                 }
+            } else if (header.target[0] == '/') {
+                // it's a path! resolve and serve
+                const char* path = header.target + 1;
+                FILE* file = fopen(path, "r");
+                if (!file) {
+                    log_error("couldn't open '%s'", path);
+                    perror("fopen");
+                    http_server_serve_error_page(client, 404, &err);
+                    continue;
+                }
+                struct stat st;
+                int ret = stat(path, &st);
+                if (ret < 0) {
+                    log_error("couldn't stat '%s'", path);
+                    http_server_serve_error_page(client, 404, &err);
+                    if (is_error(err)) {
+                        print_error(err);
+                    }
+                    fclose(file);
+                    continue;
+                }
+                char* malloced_buf = (char*)safe_malloc(st.st_size, &err);
+                if (is_error(err)) {
+                    print_error(err);
+                    fclose(file);
+                    continue;
+                }
+                size_t n = fread(malloced_buf, 1, st.st_size, file);
+                fclose(file);
+                http_server_serve(client, malloced_buf, n, "text/html", &err);
+                free(malloced_buf);
+                if (is_error(err)) {
+                    print_error(err);
+                }
+                if (n != (size_t)st.st_size) {
+                    log_warning("read %llu, expected to read %llu", (unsigned long long)n, (unsigned long long)st.st_size);
+                }
             } else {
                 http_server_serve_error_page(client, 404, &err);
+                if (is_error(err)) {
+                    print_error(err);
+                }
+                continue;
             }
         }
         ++requests_handled;
@@ -60,7 +103,16 @@ void handle_client_request(http_server*, http_client* client) {
     free(client);
 }
 
+void handle_signals(int sig) {
+    switch (sig) {
+    case SIGINT:
+        exit(2);
+        break;
+    }
+}
+
 int main(void) {
+    signal(SIGINT, handle_signals);
     log_info("%s", "welcome to http-server 1.0");
     error_t err = new_error_ok();
     http_server* server = new_http_server(&err);
