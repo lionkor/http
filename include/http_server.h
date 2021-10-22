@@ -11,6 +11,7 @@ typedef int socket_t;
 typedef struct {
     socket_t socket;
     int backlog;
+    char cwd[128];
 } http_server;
 
 // server-side info about a client

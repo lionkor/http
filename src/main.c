@@ -49,18 +49,32 @@ void handle_client_request(http_server* server, http_client* client) {
                 }
             } else if (header.target[0] == '/') {
                 // it's a path! resolve and serve
-                const char* path = header.target + 1;
-                FILE* file = fopen(path, "r");
+                const char* rel_path = header.target + 1;
+                // validate path is a subpath of our root
+                char full_path[128];
+                char* res = realpath(rel_path, full_path);
+                if (res == NULL) {
+                    perror("realpath");
+                    http_server_serve_error_page(client, 404, &err);
+                    continue;
+                }
+                log_info("resolved '%s' to '%s'", rel_path, full_path);
+                if (strncmp(full_path, server->cwd, strlen(server->cwd)) != 0) {
+                    log_error("attempt to access '%s', which isn't inside '%s' (forbidden)", full_path, server->cwd);
+                    http_server_serve_error_page(client, 403, &err);
+                    continue;
+                }
+                FILE* file = fopen(full_path, "r");
                 if (!file) {
-                    log_error("couldn't open '%s'", path);
+                    log_error("couldn't open '%s'", full_path);
                     perror("fopen");
                     http_server_serve_error_page(client, 404, &err);
                     continue;
                 }
                 struct stat st;
-                int ret = stat(path, &st);
+                int ret = stat(full_path, &st);
                 if (ret < 0) {
-                    log_error("couldn't stat '%s'", path);
+                    log_error("couldn't stat '%s'", full_path);
                     http_server_serve_error_page(client, 404, &err);
                     if (is_error(err)) {
                         print_error(err);

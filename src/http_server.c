@@ -16,6 +16,9 @@ http_server* new_http_server(error_t* ep) {
     }
     server->socket = 0;
     server->backlog = 1;
+    if (getcwd(server->cwd, sizeof(server->cwd)) == NULL) {
+        *ep = new_error_error("getcwd() failed, server's cwd is not set");
+    }
     return server;
 }
 
