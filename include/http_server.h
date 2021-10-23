@@ -19,6 +19,8 @@ typedef struct {
     struct sockaddr address;
     socklen_t address_len;
     socket_t socket;
+    // none if zero
+    struct timeval rcv_timeout;
 } http_client;
 
 typedef void (*http_client_connect_cb)(http_server*, http_client*);
@@ -27,8 +29,9 @@ http_server* new_http_server(error_t*);
 void free_http_server(http_server*);
 void start_http_server(http_server*, uint16_t port, error_t*);
 void http_server_accept_client(http_server*, http_client_connect_cb, error_t*);
-void http_server_serve(http_client*, const char* body, size_t body_size, const char* mime_type, error_t*);
+void http_client_serve(http_client*, const char* body, size_t body_size, const char* mime_type, error_t*);
 void http_server_serve_error_page(http_client*, size_t error_code, error_t*);
+void http_client_set_rcv_timeout(http_client*, time_t seconds, suseconds_t microseconds, error_t*);
 
 #define HTTP_HEADER_SIZE_MAX 4096
 typedef struct {

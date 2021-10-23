@@ -66,6 +66,7 @@ void http_server_accept_client(http_server* server, http_client_connect_cb on_co
     assert(server);
     *ep = new_error_ok();
     http_client* client = (http_client*)safe_malloc(sizeof(http_client), ep);
+    memset(client, 0, sizeof(http_client));
     if (is_error(*ep)) {
         return;
     }
@@ -229,11 +230,11 @@ void http_header_parse_field(http_header* header, char* value_buf, size_t value_
 #define CRLF "\r\n"
 #define HEADER_END CRLF
 
-void http_server_serve(http_client* client, const char* body, size_t body_size, const char* mime_type, error_t* ep) {
+void http_client_serve(http_client* client, const char* body, size_t body_size, const char* mime_type, error_t* ep) {
     *ep = new_error_ok();
     log_info("serving body of size %d", (int)body_size);
     char pre_header[] = "HTTP/1.1 200 OK" CRLF
-                        "Connection: close" CRLF
+                        "Connection: keep-alive" CRLF
                         "Content-Type: ";
     char header[HTTP_HEADER_SIZE_MAX];
     memset(header, 0, sizeof(header));
@@ -296,5 +297,16 @@ void http_server_serve_error_page(http_client* client, size_t ec, error_t* ep) {
         perror("write");
         *ep = new_error_error("write() failed");
         return;
+    }
+}
+
+void http_client_set_rcv_timeout(http_client* client, time_t seconds, suseconds_t microseconds, error_t* ep) {
+    struct timeval tv;
+    tv.tv_sec = seconds;
+    tv.tv_usec = microseconds;
+    *ep = new_error_ok();
+    if (setsockopt(client->socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        *ep = new_error_error("failed to set rcv timeout");
+        perror("setsockopt");
     }
 }

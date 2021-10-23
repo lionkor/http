@@ -15,15 +15,26 @@ void handle_client_request(http_server* server, http_client* client) {
 
     bool keep_alive = false;
 
+    error_t err = new_error_ok();
+
+    http_client_set_rcv_timeout(client, 5, 0, &err);
+    if (is_error(err)) {
+        print_error(err);
+        log_error("%s", "socket will not timeout on rcv, high risk of locking up, aborting connection");
+        goto shutdown_and_free;
+    }
+
     do {
+        err = new_error_ok();
         log_info("%s", "receiving and parsing header");
-        error_t err = new_error_ok();
         http_header header;
 
         http_client_receive_header(client, &header, &err);
         if (is_error(err)) {
             print_error(err);
             log_error("%s", "request failed");
+            // this could be a timeout or the client dropping,
+            // so we just cancel the keep-alive here
             break;
         }
 
@@ -43,7 +54,7 @@ void handle_client_request(http_server* server, http_client* client) {
         if (strcmp(header.method, "GET") == 0) {
             if (strcmp(header.target, "/") == 0) {
                 char buf[] = "HELLO, WORLD!";
-                http_server_serve(client, buf, sizeof(buf) - 1, "text/plain", &err);
+                http_client_serve(client, buf, sizeof(buf) - 1, "text/plain", &err);
                 if (is_error(err)) {
                     print_error(err);
                 }
@@ -90,7 +101,7 @@ void handle_client_request(http_server* server, http_client* client) {
                 }
                 size_t n = fread(malloced_buf, 1, st.st_size, file);
                 fclose(file);
-                http_server_serve(client, malloced_buf, n, "text/html", &err);
+                http_client_serve(client, malloced_buf, n, "text/html", &err);
                 free(malloced_buf);
                 if (is_error(err)) {
                     print_error(err);
@@ -112,6 +123,7 @@ void handle_client_request(http_server* server, http_client* client) {
         }
     } while (keep_alive);
 
+shutdown_and_free:
     shutdown(client->socket, SHUT_RD);
     close(client->socket);
     free(client);
