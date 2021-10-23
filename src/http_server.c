@@ -227,48 +227,24 @@ void http_header_parse_field(http_header* header, char* value_buf, size_t value_
     memcpy(value_buf, buf + index + next_colon, result_len);
 }
 
-#define CRLF "\r\n"
-#define HEADER_END CRLF
-
-void http_client_serve(http_client* client, const char* body, size_t body_size, const char* mime_type, error_t* ep) {
+void http_client_serve(http_client* client, const char* body, size_t body_size, http_header_data* header_data, error_t* ep) {
     *ep = new_error_ok();
-    log_info("serving body of size %d", (int)body_size);
-    char pre_header[] = "HTTP/1.1 200 OK" CRLF
-                        "Connection: keep-alive" CRLF
-                        "Content-Type: ";
     char header[HTTP_HEADER_SIZE_MAX];
     memset(header, 0, sizeof(header));
-    char* ptr = header;
-    memcpy(ptr, pre_header, sizeof(pre_header));
-    ptr += sizeof(pre_header) - 1;
-    size_t mime_type_len = strlen(mime_type);
-    memcpy(ptr, mime_type, mime_type_len);
-    ptr += mime_type_len;
-
-    memcpy(ptr, "\r\n", 2);
-    ptr += 2;
-
-    const char size_str[] = "Content-Length: ";
-    memcpy(ptr, size_str, sizeof(size_str));
-    ptr += sizeof(size_str) - 1;
-
-    char size[32];
-    size_t n = sprintf(size, "%llu", (unsigned long long)body_size);
-    memcpy(ptr, size, n);
-    ptr += n;
-
-    memcpy(ptr, "\r\n", 2);
-    ptr += 2;
-
-    // END
-    size_t header_end_len = strlen(HEADER_END);
-    memcpy(ptr, HEADER_END, header_end_len);
-    ptr += header_end_len;
-
-    //log_info("generated response header: '%s'", header);
+    const char header_fmt[] = "HTTP/1.1 %d %s" CRLF
+                              "Connection: %s" CRLF
+                              "Content-Type: %s" CRLF
+                              "Content-Length: %zu" CRLF
+                              "%s" CRLF;
+    size_t header_size = sprintf(header, header_fmt,
+        header_data->status_code,
+        header_data->status_message,
+        header_data->connection,
+        header_data->content_type,
+        body_size,
+        header_data->additional_headers);
 
     // allocate buffer for entire response
-    size_t header_size = ptr - header;
     size_t response_size = body_size + header_size;
     char* response = safe_malloc(response_size * sizeof(char), ep);
     if (is_error(*ep)) {
@@ -278,21 +254,6 @@ void http_client_serve(http_client* client, const char* body, size_t body_size, 
     memcpy(response + header_size, body, body_size);
     ssize_t written = write(client->socket, response, response_size);
     free(response);
-    if (written < 0) {
-        perror("write");
-        *ep = new_error_error("write() failed");
-        return;
-    }
-}
-
-void http_server_serve_error_page(http_client* client, size_t ec, error_t* ep) {
-    *ep = new_error_ok();
-    log_info("serving error page for %d", (int)ec);
-    char error_buffer[] = "HTTP/1.1 404 Not Found" CRLF
-                          "Content-Length: 0" CRLF
-                              //"Connection: close" CRLF
-                              HEADER_END;
-    ssize_t written = write(client->socket, error_buffer, sizeof(error_buffer));
     if (written < 0) {
         perror("write");
         *ep = new_error_error("write() failed");
@@ -310,3 +271,57 @@ void http_client_set_rcv_timeout(http_client* client, time_t seconds, suseconds_
         perror("setsockopt");
     }
 }
+
+const char http_server_rootpage[] = "<!DOCTYPE html>"
+                                    "<html>"
+                                    "<head>"
+                                    "<title>http-server 1.0</title>"
+                                    "</head>"
+                                    "<body>"
+                                    "<h1>http-server 1.0</h1>"
+                                    "<p>"
+                                    "This page is being served by an instance of "
+                                    "<a href=\"https://github.com/lionkor/http\"><code>lionkor/http</code></a>."
+                                    "</p>" HTTP_SERVER_CREDIT
+                                    "</body>"
+                                    "</html>";
+const size_t http_server_rootpage_size = sizeof(http_server_rootpage) - 1;
+const char http_server_err_404_page[] = "<!DOCTYPE html>"
+                                        "<html>"
+                                        "<head>"
+                                        "<title>404 Not Found</title>"
+                                        "</head>"
+                                        "<body>"
+                                        "<h1>404 Not Found</h1>"
+                                        "<p>"
+                                        "The requested resource was not found."
+                                        "</p>" HTTP_SERVER_CREDIT
+                                        "</body>"
+                                        "</html>";
+const size_t http_server_err_404_page_size = sizeof(http_server_err_404_page) - 1;
+const char http_server_err_403_page[] = "<!DOCTYPE html>"
+                                        "<html>"
+                                        "<head>"
+                                        "<title>403 Forbidden</title>"
+                                        "</head>"
+                                        "<body>"
+                                        "<h1>403 Forbidden</h1>"
+                                        "<p>"
+                                        "Access to this resource is forbidden."
+                                        "</p>" HTTP_SERVER_CREDIT
+                                        "</body>"
+                                        "</html>";
+const size_t http_server_err_403_page_size = sizeof(http_server_err_403_page) - 1;
+const char http_server_err_500_page[] = "<!DOCTYPE html>"
+                                        "<html>"
+                                        "<head>"
+                                        "<title>500 Internal Server Error</title>"
+                                        "</head>"
+                                        "<body>"
+                                        "<h1>403 Internal Server Error</h1>"
+                                        "<p>"
+                                        "The server ran into an internal error trying to serve this request."
+                                        "</p>" HTTP_SERVER_CREDIT
+                                        "</body>"
+                                        "</html>";
+const size_t http_server_err_500_page_size = sizeof(http_server_err_500_page) - 1;
