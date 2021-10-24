@@ -4,11 +4,14 @@
 #include "memory.h"
 
 #include <assert.h>
+#include <dirent.h>
+#include <errno.h>
 #include <netdb.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
-http_server* new_http_server(error_t* ep) {
+http_server* http_server_new(error_t* ep) {
     *ep = new_error_ok();
     http_server* server = (http_server*)safe_malloc(sizeof(http_server), ep);
     if (is_error(*ep)) {
@@ -22,11 +25,11 @@ http_server* new_http_server(error_t* ep) {
     return server;
 }
 
-void free_http_server(http_server* server) {
+void http_server_free(http_server* server) {
     free(server);
 }
 
-void start_http_server(http_server* server, uint16_t port, error_t* ep) {
+void http_server_start(http_server* server, uint16_t port, error_t* ep) {
     assert(server);
     *ep = new_error_ok();
     server->socket = socket(AF_INET, SOCK_STREAM, 0);
@@ -169,7 +172,7 @@ void http_client_receive_header(http_client* client, http_header* header, error_
     //log_info("parsed: '%s'", header->host);
 }
 
-ssize_t search_for_string(const char* in, size_t in_size, const char* what, size_t what_size) {
+ssize_t http_search_for_string(const char* in, size_t in_size, const char* what, size_t what_size) {
     for (size_t i = 0; i < in_size; ++i) {
         bool match = true;
         for (size_t k = 0; k < what_size; ++k) {
@@ -188,7 +191,7 @@ ssize_t search_for_string(const char* in, size_t in_size, const char* what, size
 void http_header_parse_field(http_header* header, char* value_buf, size_t value_buf_size, const char* fieldname, error_t* ep) {
     char* buf = header->buffer + header->start_of_headers;
     size_t buf_len = HTTP_HEADER_SIZE_MAX - header->start_of_headers;
-    ssize_t index = search_for_string(buf, buf_len, fieldname, strlen(fieldname));
+    ssize_t index = http_search_for_string(buf, buf_len, fieldname, strlen(fieldname));
     if (index < 0) {
         *ep = new_error_error("field not found");
         return;
@@ -272,6 +275,163 @@ void http_client_set_rcv_timeout(http_client* client, time_t seconds, suseconds_
     }
 }
 
+void http_client_serve_404(http_client* client, const http_header_data* template_hdr_data, error_t* ep) {
+    *ep = new_error_ok();
+    http_header_data this_hdr = *template_hdr_data;
+    this_hdr.content_type = "text/html";
+    this_hdr.status_code = 404;
+    this_hdr.status_message = "Not Found";
+    http_client_serve(client, http_server_err_404_page, http_server_err_404_page_size, &this_hdr, ep);
+}
+
+void http_client_serve_403(http_client* client, const http_header_data* template_hdr_data, error_t* ep) {
+    *ep = new_error_ok();
+    http_header_data this_hdr = *template_hdr_data;
+    this_hdr.content_type = "text/html";
+    this_hdr.status_code = 403;
+    this_hdr.status_message = "Forbidden";
+    http_client_serve(client, http_server_err_403_page, http_server_err_403_page_size, &this_hdr, ep);
+}
+
+void http_client_serve_500(http_client* client, const http_header_data* template_hdr_data, error_t* ep) {
+    *ep = new_error_ok();
+    http_header_data this_hdr = *template_hdr_data;
+    this_hdr.content_type = "text/html";
+    this_hdr.status_code = 500;
+    this_hdr.status_message = "Internal Server Error";
+    http_client_serve(client, http_server_err_500_page, http_server_err_500_page_size, &this_hdr, ep);
+}
+
+static size_t min_size_t(size_t a, size_t b) {
+    return a < b ? a : b;
+}
+
+static http_char_buffer_t build_directory_buffer(const char* source_path, const char* path, error_t* ep) {
+    *ep = new_error_ok();
+    size_t buf_size = 16 * HTTP_KB;
+    char* buf = safe_malloc(buf_size, ep);
+    if (is_error(*ep)) {
+        return (http_char_buffer_t) { NULL, 0 };
+    }
+    memset(buf, 0, buf_size);
+    DIR* dir = opendir(path);
+    if (!dir) {
+        perror("opendir");
+        *ep = new_error_error("opendir() failed");
+        return (http_char_buffer_t) { NULL, 0 };
+    }
+    struct dirent* folder = NULL;
+    size_t written = 0;
+    size_t n = 0;
+    do {
+        errno = 0;
+        folder = readdir(dir);
+        if (folder) {
+            // only consider directories and regular files
+            if (folder->d_type == DT_DIR || folder->d_type == DT_REG) {
+                char line[1 * HTTP_KB];
+                memset(line, 0, sizeof(line));
+                const char* maybe_slash = "";
+                if (folder->d_type == DT_DIR) {
+                    maybe_slash = "/";
+                }
+                n = sprintf(line, "<li><a href=\"%s%s\">%s</a></li>", folder->d_name, maybe_slash, folder->d_name);
+                memcpy(buf + written, line, strlen(line));
+                written += n;
+            }
+        } else {
+            if (errno != 0) {
+                perror("readdir");
+                log_warning("failed to read an entry from '%s'", path);
+            }
+        }
+    } while (folder && n < buf_size);
+    closedir(dir);
+    return (http_char_buffer_t) { buf, written };
+}
+
+void http_client_serve_file(http_client* client, http_server* server, const char* target, const http_header_data* hdr, error_t* ep) {
+    const char* rel_path = target;
+    // validate path is a subpath of our root
+    char full_rel_path[256];
+    memset(full_rel_path, 0, sizeof(full_rel_path));
+    memcpy(full_rel_path, server->cwd, min_size_t(sizeof(server->cwd), sizeof(full_rel_path)));
+    strncat(full_rel_path, "/", sizeof(full_rel_path) - strlen(full_rel_path) - 1);
+    strncat(full_rel_path, rel_path, sizeof(full_rel_path) - strlen(full_rel_path) - 1);
+    log_info("checking if '%s' is under '%s'", full_rel_path, server->cwd);
+    if (strncmp(full_rel_path, server->cwd, strlen(server->cwd)) != 0) {
+        log_error("attempt to access '%s', which isn't inside '%s' (forbidden)", rel_path, server->cwd);
+        http_client_serve_403(client, hdr, ep);
+        return;
+    }
+    struct stat st;
+    int ret = stat(full_rel_path, &st);
+    if (ret < 0) {
+        log_error("couldn't stat '%s'", full_rel_path);
+        http_client_serve_404(client, hdr, ep);
+        return;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        // serve directory
+        const char* source_path = target;
+        http_char_buffer_t buf = build_directory_buffer(source_path, full_rel_path, ep);
+        if (is_error(*ep)) {
+            print_error(*ep);
+            http_client_serve_500(client, hdr, ep);
+            free(buf.data);
+            return;
+        }
+        size_t final_buffer_size = 512 + buf.len;
+        char* final_buffer = safe_malloc(final_buffer_size, ep);
+        if (is_error(*ep)) {
+            free(buf.data);
+            return;
+        }
+        sprintf(final_buffer, "<!DOCTYPE html><html>"
+                              "<head><title>"
+                              "Listing of '/%s'"
+                              "</title></head>"
+                              "<body>"
+                              "<h1>Listing of '/%s'</h1>"
+                              "<ul>"
+                              "%s"
+                              "</ul>" HTTP_SERVER_CREDIT "</body>"
+                              "</html>",
+            target, target,
+            buf.data);
+        free(buf.data);
+        buf.data = NULL;
+        buf.len = 0;
+        http_header_data this_hdr = *hdr;
+        this_hdr.content_type = "text/html";
+        http_client_serve(client, final_buffer, final_buffer_size, &this_hdr, ep);
+        free(final_buffer);
+        return;
+    } else {
+        FILE* file = fopen(full_rel_path, "r");
+        if (!file) {
+            log_error("couldn't open '%s'", full_rel_path);
+            perror("fopen");
+            http_client_serve_404(client, hdr, ep);
+            return;
+        }
+        char* malloced_buf = (char*)safe_malloc(st.st_size, ep);
+        if (is_error(*ep)) {
+            fclose(file);
+            return;
+        }
+        size_t n = fread(malloced_buf, 1, st.st_size, file);
+        fclose(file);
+        http_header_data this_hdr = *hdr;
+        this_hdr.content_type = "text/plain";
+        http_client_serve(client, malloced_buf, n, &this_hdr, ep);
+        free(malloced_buf);
+        if (n != (size_t)st.st_size) {
+            log_warning("read %llu, expected to read %llu", (unsigned long long)n, (unsigned long long)st.st_size);
+        }
+    }
+}
+
 const char http_server_rootpage[] = "<!DOCTYPE html>"
                                     "<html>"
                                     "<head>"
@@ -318,7 +478,7 @@ const char http_server_err_500_page[] = "<!DOCTYPE html>"
                                         "<title>500 Internal Server Error</title>"
                                         "</head>"
                                         "<body>"
-                                        "<h1>403 Internal Server Error</h1>"
+                                        "<h1>500 Internal Server Error</h1>"
                                         "<p>"
                                         "The server ran into an internal error trying to serve this request."
                                         "</p>" HTTP_SERVER_CREDIT
