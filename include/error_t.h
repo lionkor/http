@@ -8,8 +8,8 @@ typedef struct {
     const char* error;
 } error_t;
 
-inline error_t new_error_ok(void);
-inline error_t new_error_error(const char* msg);
-inline bool is_error(error_t);
-inline bool is_ok(error_t);
-inline void print_error(error_t);
+error_t new_error_ok(void);
+error_t new_error_error(const char* msg);
+bool is_error(error_t);
+bool is_ok(error_t);
+void print_error(error_t);

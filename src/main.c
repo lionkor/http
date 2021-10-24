@@ -2,20 +2,51 @@
 #include "logging.h"
 #include "memory.h"
 
+#include <assert.h>
 #include <dirent.h>
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/signal.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
+
+void sleep_ms(long ms) {
+    struct timespec rem;
+    struct timespec req = {
+        (int)(ms / 1000), /* secs (Must be Non-Negative) */
+        (ms % 1000) * 1000000 /* nano (Must be in range of 0 to 999999999) */
+    };
+
+    (void)nanosleep(&req, &rem);
+}
 
 size_t requests_handled = 0;
 
-void handle_client_request(http_server* server, http_client* client) {
-    log_info("%s: %p", "got client", (void*)client);
+typedef struct {
+    pthread_t id;
+    pthread_attr_t attr;
+    _Atomic bool active;
+    _Atomic bool initialized;
+} http_thread;
 
+#define HTTP_THREAD_COUNT 64
+http_thread threads[HTTP_THREAD_COUNT];
+
+typedef struct {
+    http_server* server;
+    http_client* client;
+    http_thread* thread;
+} http_request_args;
+
+void* handle_client_request_thread_main(void* args_ptr) {
+    http_request_args* args = args_ptr;
+    http_client* client = args->client;
+    http_server* server = args->server;
     bool keep_alive = false;
+    log_info("thread %ld is pid %d", args->thread->id, getpid());
 
     error_t err = new_error_ok();
 
@@ -102,6 +133,66 @@ shutdown_and_free:
     shutdown(client->socket, SHUT_RD);
     close(client->socket);
     free(client);
+    atomic_store(&args->thread->active, false);
+    return NULL;
+}
+
+void handle_client_request(http_server* server, http_client* client) {
+    log_info("%s: %p", "got client", (void*)client);
+    http_thread* thread = NULL;
+    bool expected = false;
+    bool desired = true;
+    size_t tries = 0;
+    long ms = 1000;
+    while (!thread) {
+        for (size_t i = 0; i < HTTP_THREAD_COUNT; ++i) {
+            if (atomic_compare_exchange_strong(&threads[i].active, &expected, desired)) {
+                // we can only ask more info if its initialized
+                if (atomic_load(&threads[i].initialized)) {
+                    int detachstate = 0;
+                    pthread_attr_getdetachstate(&threads[i].attr, &detachstate);
+                    if (detachstate == PTHREAD_CREATE_JOINABLE) {
+                        log_info("%ld is joinable", threads[i].id);
+                        int ret = pthread_join(threads[i].id, NULL);
+                        log_info("%ld was joined", threads[i].id);
+                        if (ret != 0) {
+                            perror("pthread_join");
+                            // continue anyways
+                        }
+                    }
+                    pthread_attr_destroy(&threads[i].attr);
+                }
+                thread = &threads[i];
+                break;
+            }
+        }
+        if (thread) {
+            break;
+        }
+        ++tries;
+        if (tries > 10) {
+            tries = 0;
+            log_info("waiting for too long, speeding up to %ldms", ms);
+            ms /= 2;
+        }
+        sleep_ms(ms);
+    }
+    assert(thread);
+    error_t err = new_error_ok();
+    http_request_args* args = safe_malloc(sizeof(http_request_args), &err);
+    if (is_error(err)) {
+        print_error(err);
+        log_error("%s", "fatal - could not allocate resources to create a new thread");
+        atomic_store(&thread->active, false);
+        return;
+    }
+    args->client = client;
+    args->server = server;
+    args->thread = thread;
+    pthread_attr_init(&args->thread->attr);
+    pthread_create(&args->thread->id, &args->thread->attr, handle_client_request_thread_main, (void*)args);
+    atomic_store(&args->thread->initialized, true);
+    log_info("created thread for client %p with id %ld", (void*)client, thread->id);
 }
 
 void handle_signals(int sig) {
@@ -113,6 +204,7 @@ void handle_signals(int sig) {
 }
 
 int main(void) {
+    memset(threads, 0, sizeof(threads));
     signal(SIGINT, handle_signals);
     log_info("%s", "welcome to http-server 1.0");
     error_t err = new_error_ok();

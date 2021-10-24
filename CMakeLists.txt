@@ -1,10 +1,6 @@
 project(http)
 
-if (MSVC)
-    add_compile_options(/W4 /WX)
-else()
-    add_compile_options(-Wall -Wextra -pedantic -Og -g)
-endif()
+add_compile_options(-Wall -Wextra -pedantic -Og -g -pthread)
 
 add_executable(http-server 
     src/main.c
@@ -13,3 +9,4 @@ add_executable(http-server
     include/memory.h src/memory.c)
 
 target_include_directories(http-server PRIVATE include)
+target_link_libraries(http-server pthread)

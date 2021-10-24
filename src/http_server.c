@@ -194,6 +194,7 @@ void http_header_parse_field(http_header* header, char* value_buf, size_t value_
     size_t buf_len = HTTP_HEADER_SIZE_MAX - header->start_of_headers;
     ssize_t index = http_search_for_string(buf, buf_len, fieldname, strlen(fieldname));
     if (index < 0) {
+        log_info("field %s not found", fieldname);
         *ep = new_error_error("field not found");
         return;
     }

@@ -3,6 +3,7 @@
 #include "error_t.h"
 
 #include <netinet/in.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 
