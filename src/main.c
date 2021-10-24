@@ -28,7 +28,7 @@ void handle_client_request(http_server* server, http_client* client) {
 
     http_header_data hdr;
     memset(&hdr, 0, sizeof(hdr));
-    hdr.additional_headers = "Keep-Alive: timeout=5" CRLF
+    hdr.additional_headers = "Keep-Alive: timeout=10" CRLF
                              "Server: lionkor/http" CRLF;
     hdr.connection = "close";
     hdr.status_code = 200;
@@ -40,9 +40,14 @@ void handle_client_request(http_server* server, http_client* client) {
         http_header header;
 
         http_client_receive_header(client, &header, &err);
+        log_info("errno is %d", errno);
         if (is_error(err)) {
+            if (errno == 11) {
+                log_info("client %p timed out", (void*)client);
+            } else {
+                log_error("%s", "request failed");
+            }
             print_error(err);
-            log_error("%s", "request failed");
             // this could be a timeout or the client dropping,
             // so we just cancel the keep-alive here
             break;
@@ -62,6 +67,8 @@ void handle_client_request(http_server* server, http_client* client) {
                 hdr.connection = "close";
             }
         }
+
+        log_info("serving %s %s", header.method, header.target);
 
         if (strcmp(header.method, "GET") == 0) {
             if (server->show_root_page && strcmp(header.target, "/") == 0) {
@@ -84,6 +91,7 @@ void handle_client_request(http_server* server, http_client* client) {
                 }
             }
         }
+        log_info("served %s %s", header.method, header.target);
         ++requests_handled;
         if (requests_handled % 1000 == 0) {
             fprintf(stderr, "requests handled: %llu\n", (unsigned long long)requests_handled);

@@ -111,8 +111,9 @@ void http_client_receive_header(http_client* client, http_header* header, error_
 
     memset(header, 0, sizeof(*header));
 
+    errno = 0;
     ssize_t n = read(client->socket, header->buffer, HTTP_HEADER_SIZE_MAX);
-    if (n < 0) {
+    if (n < 0 || errno != 0) {
         perror("read");
         *ep = new_error_error("read() failed");
         return;
@@ -306,7 +307,7 @@ static size_t min_size_t(size_t a, size_t b) {
     return a < b ? a : b;
 }
 
-static http_char_buffer_t build_directory_buffer(const char* source_path, const char* path, error_t* ep) {
+static http_char_buffer_t build_directory_buffer(const char* path, error_t* ep) {
     *ep = new_error_ok();
     size_t buf_size = 16 * HTTP_KB;
     char* buf = safe_malloc(buf_size, ep);
@@ -350,6 +351,13 @@ static http_char_buffer_t build_directory_buffer(const char* source_path, const 
     return (http_char_buffer_t) { buf, written };
 }
 
+static const char* get_path_extension(const char* filename) {
+    const char* dot = strrchr(filename, '.');
+    if (!dot || dot == filename)
+        return "";
+    return dot + 1;
+}
+
 void http_client_serve_file(http_client* client, http_server* server, const char* target, const http_header_data* hdr, error_t* ep) {
     const char* rel_path = target;
     // validate path is a subpath of our root
@@ -358,7 +366,7 @@ void http_client_serve_file(http_client* client, http_server* server, const char
     memcpy(full_rel_path, server->cwd, min_size_t(sizeof(server->cwd), sizeof(full_rel_path)));
     strncat(full_rel_path, "/", sizeof(full_rel_path) - strlen(full_rel_path) - 1);
     strncat(full_rel_path, rel_path, sizeof(full_rel_path) - strlen(full_rel_path) - 1);
-    log_info("checking if '%s' is under '%s'", full_rel_path, server->cwd);
+    //log_info("checking if '%s' is under '%s'", full_rel_path, server->cwd);
     if (strncmp(full_rel_path, server->cwd, strlen(server->cwd)) != 0) {
         log_error("attempt to access '%s', which isn't inside '%s' (forbidden)", rel_path, server->cwd);
         http_client_serve_403(client, hdr, ep);
@@ -373,8 +381,7 @@ void http_client_serve_file(http_client* client, http_server* server, const char
     }
     if (S_ISDIR(st.st_mode)) {
         // serve directory
-        const char* source_path = target;
-        http_char_buffer_t buf = build_directory_buffer(source_path, full_rel_path, ep);
+        http_char_buffer_t buf = build_directory_buffer(full_rel_path, ep);
         if (is_error(*ep)) {
             print_error(*ep);
             http_client_serve_500(client, hdr, ep);
@@ -423,7 +430,14 @@ void http_client_serve_file(http_client* client, http_server* server, const char
         size_t n = fread(malloced_buf, 1, st.st_size, file);
         fclose(file);
         http_header_data this_hdr = *hdr;
-        this_hdr.content_type = "text/plain";
+        const char* ext = get_path_extension(full_rel_path);
+        if (strcmp(ext, "html") == 0) {
+            this_hdr.content_type = "text/html";
+        } else if (strcmp(ext, "css") == 0) {
+            this_hdr.content_type = "text/css";
+        } else if (strcmp(ext, "js") == 0) {
+            this_hdr.content_type = "text/js";
+        }
         http_client_serve(client, malloced_buf, n, &this_hdr, ep);
         free(malloced_buf);
         if (n != (size_t)st.st_size) {
