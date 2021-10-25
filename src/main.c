@@ -26,43 +26,50 @@ void sleep_ms(long ms) {
 size_t requests_handled = 0;
 
 #define HTTP_THREAD_POOL_SIZE 8
-typedef void (*http_thread_pool_fn_t)(http_server*, http_client*, error_t*);
+typedef void (*http_thread_pool_fn_t)(void*);
 typedef struct {
     pthread_t threads[HTTP_THREAD_POOL_SIZE];
     pthread_attr_t attrs[HTTP_THREAD_POOL_SIZE];
     http_thread_pool_fn_t jobs[HTTP_THREAD_POOL_SIZE];
+    void* args[HTTP_THREAD_POOL_SIZE];
     pthread_mutex_t jobs_mutexes[HTTP_THREAD_POOL_SIZE];
     pthread_mutexattr_t jobs_mutexes_attrs[HTTP_THREAD_POOL_SIZE];
+    pthread_cond_t condition_vars[HTTP_THREAD_POOL_SIZE];
+    pthread_condattr_t condition_vars_attrs[HTTP_THREAD_POOL_SIZE];
     atomic_bool shutdown;
 } http_thread_pool;
 
 typedef struct {
     http_thread_pool* pool;
     size_t index;
-    http_server* server;
-    http_client* client;
 } http_thread_pool_main_args;
+
+#define HTTP_MS_TO_NS(x) ((x)*1000000)
 
 void* http_thread_pool_main(void* args_ptr) {
     http_thread_pool_main_args* args = args_ptr;
     http_thread_pool* pool = args->pool;
     size_t index = args->index;
+    struct timespec wait;
+    sleep_ms(index * 250);
     while (!atomic_load(&pool->shutdown)) {
-        error_t err = new_error_ok();
+        clock_gettime(CLOCK_REALTIME, &wait);
+        wait.tv_sec += 1;
         http_thread_pool_fn_t fn = NULL;
+        void* arg = NULL;
         pthread_mutex_lock(&pool->jobs_mutexes[index]);
+        pthread_cond_timedwait(&pool->condition_vars[index], &pool->jobs_mutexes[index], &wait);
         if (pool->jobs[index]) {
             fn = pool->jobs[index];
-            pool->jobs[index] = NULL;
+            arg = pool->args[index];
+            pool->args[index] = NULL;
         }
         pthread_mutex_unlock(&pool->jobs_mutexes[index]);
         if (fn) {
-            log_info("found a job in thread %zu", index);
-            fn(args->server, args->client, &err);
-            if (is_error(err)) {
-                log_error("thread %zu, fn %p: %s", index, (void*)fn, err.error);
-            }
-            log_info("done executing job in thread %zu", index);
+            fn(arg);
+            pthread_mutex_lock(&pool->jobs_mutexes[index]);
+            pool->jobs[index] = NULL;
+            pthread_mutex_unlock(&pool->jobs_mutexes[index]);
         } else {
             sched_yield();
         }
@@ -72,16 +79,56 @@ void* http_thread_pool_main(void* args_ptr) {
 }
 
 http_thread_pool* http_thread_pool_new(error_t* ep) {
+    *ep = new_error_ok();
     http_thread_pool* pool = safe_malloc(sizeof(http_thread_pool), ep);
     if (!is_error(*ep)) {
         log_info("building thread pool of %d threads", HTTP_THREAD_POOL_SIZE);
         memset(pool, 0, sizeof(http_thread_pool));
         atomic_store(&pool->shutdown, false);
         for (size_t i = 0; i < HTTP_THREAD_POOL_SIZE; ++i) {
-            pthread_attr_init(&pool->attrs[i]);
-            pthread_create(&pool->threads[i], &pool->attrs[i], http_thread_pool_main, pool);
-            pthread_mutexattr_init(&pool->jobs_mutexes_attrs[i]);
-            pthread_mutex_init(&pool->jobs_mutexes[i], &pool->jobs_mutexes_attrs[i]);
+            int res;
+            res = pthread_condattr_init(&pool->condition_vars_attrs[i]);
+            if (res != 0) {
+                perror("pthread_condattr_init");
+                *ep = new_error_error("failed to init condattr");
+                return NULL;
+            }
+            res = pthread_cond_init(&pool->condition_vars[i], &pool->condition_vars_attrs[i]);
+            if (res != 0) {
+                perror("pthread_cond_init");
+                *ep = new_error_error("failed to init cond");
+                return NULL;
+            }
+            res = pthread_mutexattr_init(&pool->jobs_mutexes_attrs[i]);
+            if (res != 0) {
+                perror("pthread_mutexattr_init");
+                *ep = new_error_error("failed to init mutexattr");
+                return NULL;
+            }
+            res = pthread_mutex_init(&pool->jobs_mutexes[i], &pool->jobs_mutexes_attrs[i]);
+            if (res != 0) {
+                perror("pthread_mutex_init");
+                *ep = new_error_error("failed to init mutex");
+                return NULL;
+            }
+            res = pthread_attr_init(&pool->attrs[i]);
+            if (res != 0) {
+                perror("pthread_attr_init");
+                *ep = new_error_error("failed to init thread attr");
+                return NULL;
+            }
+            http_thread_pool_main_args* args = safe_malloc(sizeof(http_thread_pool_main_args), ep);
+            if (is_error(*ep)) {
+                return NULL;
+            }
+            args->index = i;
+            args->pool = pool;
+            res = pthread_create(&pool->threads[i], &pool->attrs[i], http_thread_pool_main, args);
+            if (res != 0) {
+                perror("pthread_create");
+                *ep = new_error_error("failed to create thread");
+                return NULL;
+            }
         }
     }
     return pool;
@@ -96,47 +143,44 @@ void http_thread_pool_destroy(http_thread_pool* pool) {
     free(pool);
 }
 
-void http_thread_pool_add_job(http_thread_pool* pool, http_thread_pool_fn_t job, error_t* ep) {
+void http_thread_pool_add_job(http_thread_pool* pool, http_thread_pool_fn_t job, void* arg, error_t* ep) {
     *ep = new_error_ok();
     bool found = false;
-    for (size_t i = 0; i < HTTP_THREAD_POOL_SIZE; ++i) {
-        pthread_mutex_lock(&pool->jobs_mutexes[i]);
+    static size_t last_i = 0;
+    size_t i = (last_i + 1) % HTTP_THREAD_POOL_SIZE;
+    while (!found) {
         if (!pool->jobs[i]) {
-            pool->jobs[i] = job;
-            found = true;
+            pthread_mutex_lock(&pool->jobs_mutexes[i]);
+            if (!pool->jobs[i]) {
+                pool->jobs[i] = job;
+                pool->args[i] = arg;
+                found = true;
+                last_i = 0;
+                pthread_mutex_unlock(&pool->jobs_mutexes[i]);
+                pthread_cond_signal(&pool->condition_vars[i]);
+                break;
+            }
             pthread_mutex_unlock(&pool->jobs_mutexes[i]);
-            break;
         }
-        pthread_mutex_unlock(&pool->jobs_mutexes[i]);
+        ++i;
+        i %= HTTP_THREAD_POOL_SIZE;
     }
+    last_i = i;
     if (!found) {
         *ep = new_error_error("failed to find empty job slot");
     }
 }
 
 typedef struct {
-    pthread_t id;
-    pthread_attr_t attr;
-    _Atomic bool active;
-    _Atomic bool initialized;
-} http_thread;
-
-#define HTTP_THREAD_COUNT 64
-http_thread threads[HTTP_THREAD_COUNT];
-
-typedef struct {
     http_server* server;
     http_client* client;
-    http_thread* thread;
-} http_request_args;
+} handle_request_arg;
 
-void* handle_client_request_thread_main(void* args_ptr) {
-    http_request_args* args = args_ptr;
-    http_client* client = args->client;
-    http_server* server = args->server;
+void handle_client_request_thread(void* arg_ptr) {
+    handle_request_arg* arg = arg_ptr;
+    http_client* client = arg->client;
+    http_server* server = arg->server;
     bool keep_alive = false;
-    log_info("thread %ld is pid %d", args->thread->id, getpid());
-
     error_t err = new_error_ok();
 
     http_client_set_rcv_timeout(client, 5, 0, &err);
@@ -156,11 +200,11 @@ void* handle_client_request_thread_main(void* args_ptr) {
 
     do {
         err = new_error_ok();
-        log_info("%s", "receiving and parsing header");
+        //log_info("%s", "receiving and parsing header");
         http_header header;
 
         http_client_receive_header(client, &header, &err);
-        log_info("errno is %d", errno);
+        //log_info("errno is %d", errno);
         if (is_error(err)) {
             if (errno == 11) {
                 log_info("client %p timed out", (void*)client);
@@ -179,11 +223,11 @@ void* handle_client_request_thread_main(void* args_ptr) {
             print_error(err);
         } else {
             if (strcmp(buf, "keep-alive") == 0) {
-                log_info("%s", "keep alive");
+                //log_info("%s", "keep alive");
                 keep_alive = true;
                 hdr.connection = "keep-alive";
             } else {
-                log_info("%s", "don't keep alive");
+                //log_info("%s", "don't keep alive");
                 hdr.connection = "close";
             }
         }
@@ -222,66 +266,22 @@ shutdown_and_free:
     shutdown(client->socket, SHUT_RD);
     close(client->socket);
     free(client);
-    atomic_store(&args->thread->active, false);
-    return NULL;
+    free(arg_ptr);
 }
 
+http_thread_pool* pool = NULL;
+
 void handle_client_request(http_server* server, http_client* client) {
-    log_info("%s: %p", "got client", (void*)client);
-    http_thread* thread = NULL;
-    bool expected = false;
-    bool desired = true;
-    size_t tries = 0;
-    long ms = 1000;
-    while (!thread) {
-        for (size_t i = 0; i < HTTP_THREAD_COUNT; ++i) {
-            if (atomic_compare_exchange_strong(&threads[i].active, &expected, desired)) {
-                // we can only ask more info if its initialized
-                if (atomic_load(&threads[i].initialized)) {
-                    int detachstate = 0;
-                    pthread_attr_getdetachstate(&threads[i].attr, &detachstate);
-                    if (detachstate == PTHREAD_CREATE_JOINABLE) {
-                        log_info("%ld is joinable", threads[i].id);
-                        int ret = pthread_join(threads[i].id, NULL);
-                        log_info("%ld was joined", threads[i].id);
-                        if (ret != 0) {
-                            perror("pthread_join");
-                            // continue anyways
-                        }
-                    }
-                    pthread_attr_destroy(&threads[i].attr);
-                }
-                thread = &threads[i];
-                break;
-            }
-        }
-        if (thread) {
-            break;
-        }
-        ++tries;
-        if (tries > 10) {
-            tries = 0;
-            log_info("waiting for too long, speeding up to %ldms", ms);
-            ms /= 2;
-        }
-        sleep_ms(ms);
-    }
-    assert(thread);
     error_t err = new_error_ok();
-    http_request_args* args = safe_malloc(sizeof(http_request_args), &err);
+    handle_request_arg* arg = safe_malloc(sizeof(handle_request_arg), &err);
     if (is_error(err)) {
         print_error(err);
-        log_error("%s", "fatal - could not allocate resources to create a new thread");
-        atomic_store(&thread->active, false);
         return;
     }
-    args->client = client;
-    args->server = server;
-    args->thread = thread;
-    pthread_attr_init(&args->thread->attr);
-    pthread_create(&args->thread->id, &args->thread->attr, handle_client_request_thread_main, (void*)args);
-    atomic_store(&args->thread->initialized, true);
-    log_info("created thread for client %p with id %ld", (void*)client, thread->id);
+    arg->client = client;
+    arg->server = server;
+    http_thread_pool_add_job(pool, handle_client_request_thread, (void*)arg, &err);
+    assert(is_ok(err));
 }
 
 void handle_signals(int sig) {
@@ -293,11 +293,15 @@ void handle_signals(int sig) {
 }
 
 int main(void) {
-    memset(threads, 0, sizeof(threads));
     signal(SIGINT, handle_signals);
     log_info("%s", "welcome to http-server 1.0");
     error_t err = new_error_ok();
     http_server* server = http_server_new(&err);
+    if (is_error(err)) {
+        print_error(err);
+        return __LINE__;
+    }
+    pool = http_thread_pool_new(&err);
     if (is_error(err)) {
         print_error(err);
         return __LINE__;
