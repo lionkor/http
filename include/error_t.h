@@ -8,17 +8,17 @@ typedef struct {
     const char* error;
 } http_error_t;
 
-#define new_error_ok() \
+#define http_new_error_ok() \
     (http_error_t) { NULL }
-#define new_error_error(msg) \
+#define http_new_error_error(msg) \
     (http_error_t) { msg }
-#define is_error(err) (e.error != NULL)
-#define is_ok(err) (e.error == NULL)
-#define print_error(err)                 \
-    do {                                 \
-        if (e.error == NULL) {           \
-            log_error("%s", "no error"); \
-        } else {                         \
-            log_error("%s", e.error);    \
-        }                                \
-        while (0)
+#define http_is_error(err) ((err).error != NULL)
+#define http_is_ok(err) ((err).error == NULL)
+#define http_print_error(err)             \
+    do {                                  \
+        if ((err).error == NULL) {        \
+            log_error("%s", "no error");  \
+        } else {                          \
+            log_error("%s", (err).error); \
+        }                                 \
+    } while (0)

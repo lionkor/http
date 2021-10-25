@@ -13,15 +13,15 @@
 #include <unistd.h>
 
 http_server* http_server_new(http_error_t* ep) {
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
     http_server* server = (http_server*)safe_malloc(sizeof(http_server), ep);
-    if (is_error(*ep)) {
-        print_error(*ep);
+    if (http_is_error(*ep)) {
+        http_print_error(*ep);
     }
     server->socket = 0;
     server->backlog = 1;
     if (getcwd(server->cwd, sizeof(server->cwd)) == NULL) {
-        *ep = new_error_error("getcwd() failed, server's cwd is not set");
+        *ep = http_new_error_error("getcwd() failed, server's cwd is not set");
     }
     return server;
 }
@@ -37,11 +37,11 @@ static void handle_sigalarm(int sig) {
 
 void http_server_start(http_server* server, uint16_t port, http_error_t* ep) {
     assert(server);
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
     server->socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server->socket == -1) {
         perror("socket");
-        *ep = new_error_error("socket() failed");
+        *ep = http_new_error_error("socket() failed");
         return;
     }
     log_info("%s", "socket created");
@@ -58,14 +58,14 @@ void http_server_start(http_server* server, uint16_t port, http_error_t* ep) {
     int ret = bind(server->socket, (struct sockaddr*)&address, sizeof(address));
     if (ret != 0) {
         perror("bind");
-        *ep = new_error_error("bind() failed");
+        *ep = http_new_error_error("bind() failed");
         return;
     }
     log_info("socket bound to port %d", port);
     ret = listen(server->socket, server->backlog);
     if (ret != 0) {
         perror("bind");
-        *ep = new_error_error("listen() failed");
+        *ep = http_new_error_error("listen() failed");
         return;
     }
     log_info("listening on port %d", port);
@@ -73,10 +73,10 @@ void http_server_start(http_server* server, uint16_t port, http_error_t* ep) {
 
 void http_server_accept_client(http_server* server, http_client_connect_cb on_connect, http_error_t* ep) {
     assert(server);
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
     http_client* client = (http_client*)safe_malloc(sizeof(http_client), ep);
     memset(client, 0, sizeof(http_client));
-    if (is_error(*ep)) {
+    if (http_is_error(*ep)) {
         return;
     }
     fd_set set;
@@ -88,19 +88,19 @@ void http_server_accept_client(http_server* server, http_client_connect_cb on_co
     int select_ret = select(server->socket + 1, &set, NULL, NULL, NULL);
     if (select_ret == 0) {
         // timed out
-        *ep = new_error_error("server socket timed out for accept()");
+        *ep = http_new_error_error("server socket timed out for accept()");
         free(client);
         return;
     } else if (select_ret < 0) {
         perror("select");
-        *ep = new_error_error("select() failed");
+        *ep = http_new_error_error("select() failed");
         free(client);
         return;
     }
     client->socket = accept(server->socket, (struct sockaddr*)&client->address, &client->address_len);
     if (client->socket < 0) {
         perror("accept");
-        *ep = new_error_error("accept() failed");
+        *ep = http_new_error_error("accept() failed");
         free(client);
         return;
     }
@@ -131,7 +131,7 @@ static int find_next_crlf_in_buffer(char* buf, size_t size) {
 void http_client_receive_header(http_client* client, http_header* header, http_error_t* ep) {
     assert(client);
     assert(header);
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
 
     memset(header, 0, sizeof(*header));
 
@@ -139,13 +139,13 @@ void http_client_receive_header(http_client* client, http_header* header, http_e
     ssize_t n = read(client->socket, header->buffer, HTTP_HEADER_SIZE_MAX);
     if (n < 0 || errno != 0) {
         perror("read");
-        *ep = new_error_error("read() failed");
+        *ep = http_new_error_error("read() failed");
         return;
     }
     if (n < 3) {
         // can't be a valid one
         log_error("%s", "got an invalid header (size < 3)");
-        *ep = new_error_error("invalid header");
+        *ep = http_new_error_error("invalid header");
         return;
     }
     header->buffer[n] = '\0';
@@ -170,7 +170,7 @@ void http_client_receive_header(http_client* client, http_header* header, http_e
     for (size_t i = 0; i < FIRST_HDR_SIZEOF; ++i) {
         int index = find_next_in_buffer(ptr, n, ' ');
         if (index < 0) {
-            *ep = new_error_error(first_errors[i]);
+            *ep = http_new_error_error(first_errors[i]);
             return;
         }
         memcpy(first_buffers[i], ptr, index);
@@ -181,7 +181,7 @@ void http_client_receive_header(http_client* client, http_header* header, http_e
 
     int index = find_next_crlf_in_buffer(ptr, n);
     if (index < 0) {
-        *ep = new_error_error("failed to parse VERSION");
+        *ep = http_new_error_error("failed to parse VERSION");
         return;
     }
     memcpy(header->version, ptr, index);
@@ -191,7 +191,7 @@ void http_client_receive_header(http_client* client, http_header* header, http_e
 
     // parse Host, which is mandatory on HTTP/1.1
     http_header_parse_field(header, header->host, sizeof(header->host), "Host", ep);
-    if (is_error(*ep)) {
+    if (http_is_error(*ep)) {
         return;
     }
     //log_info("parsed: '%s'", header->host);
@@ -219,12 +219,12 @@ void http_header_parse_field(http_header* header, char* value_buf, size_t value_
     ssize_t index = http_search_for_string(buf, buf_len, fieldname, strlen(fieldname));
     if (index < 0) {
         log_info("field %s not found", fieldname);
-        *ep = new_error_error("field not found");
+        *ep = http_new_error_error("field not found");
         return;
     }
     ssize_t next_colon = find_next_in_buffer(buf + index, buf_len - index, ':');
     if (next_colon < 0) {
-        *ep = new_error_error("fieldname found, but not followed by colon");
+        *ep = http_new_error_error("fieldname found, but not followed by colon");
         return;
     }
     // skip colon
@@ -236,7 +236,7 @@ void http_header_parse_field(http_header* header, char* value_buf, size_t value_
     ssize_t next_crlf = find_next_crlf_in_buffer(buf + index, buf_len - index);
     if (next_crlf > -1) {
         if (next_crlf > -1 && next_crlf < next_colon) {
-            *ep = new_error_error("fieldname found, but followed by crlf before colon");
+            *ep = http_new_error_error("fieldname found, but followed by crlf before colon");
             return;
         }
     } else {
@@ -247,7 +247,7 @@ void http_header_parse_field(http_header* header, char* value_buf, size_t value_
 
     size_t result_len = next_crlf - next_colon;
     if (value_buf_size < result_len) {
-        *ep = new_error_error("buffer too small to fit value of field");
+        *ep = http_new_error_error("buffer too small to fit value of field");
         return;
     }
 
@@ -257,7 +257,7 @@ void http_header_parse_field(http_header* header, char* value_buf, size_t value_
 }
 
 void http_client_serve(http_client* client, const char* body, size_t body_size, http_header_data* header_data, http_error_t* ep) {
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
     char header[HTTP_HEADER_SIZE_MAX];
     memset(header, 0, sizeof(header));
     const char header_fmt[] = "HTTP/1.1 %d %s" CRLF
@@ -276,7 +276,7 @@ void http_client_serve(http_client* client, const char* body, size_t body_size, 
     // allocate buffer for entire response
     size_t response_size = body_size + header_size;
     char* response = safe_malloc(response_size * sizeof(char), ep);
-    if (is_error(*ep)) {
+    if (http_is_error(*ep)) {
         return;
     }
     memcpy(response, header, header_size);
@@ -285,7 +285,7 @@ void http_client_serve(http_client* client, const char* body, size_t body_size, 
     free(response);
     if (written < 0) {
         perror("write");
-        *ep = new_error_error("write() failed");
+        *ep = http_new_error_error("write() failed");
         return;
     }
 }
@@ -294,15 +294,15 @@ void http_client_set_rcv_timeout(http_client* client, time_t seconds, suseconds_
     struct timeval tv;
     tv.tv_sec = seconds;
     tv.tv_usec = microseconds;
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
     if (setsockopt(client->socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-        *ep = new_error_error("failed to set rcv timeout");
+        *ep = http_new_error_error("failed to set rcv timeout");
         perror("setsockopt");
     }
 }
 
 void http_client_serve_404(http_client* client, const http_header_data* template_hdr_data, http_error_t* ep) {
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
     http_header_data this_hdr = *template_hdr_data;
     this_hdr.content_type = "text/html";
     this_hdr.status_code = 404;
@@ -311,7 +311,7 @@ void http_client_serve_404(http_client* client, const http_header_data* template
 }
 
 void http_client_serve_403(http_client* client, const http_header_data* template_hdr_data, http_error_t* ep) {
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
     http_header_data this_hdr = *template_hdr_data;
     this_hdr.content_type = "text/html";
     this_hdr.status_code = 403;
@@ -320,7 +320,7 @@ void http_client_serve_403(http_client* client, const http_header_data* template
 }
 
 void http_client_serve_500(http_client* client, const http_header_data* template_hdr_data, http_error_t* ep) {
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
     http_header_data this_hdr = *template_hdr_data;
     this_hdr.content_type = "text/html";
     this_hdr.status_code = 500;
@@ -333,17 +333,17 @@ static size_t min_size_t(size_t a, size_t b) {
 }
 
 static http_char_buffer_t build_directory_buffer(const char* path, http_error_t* ep) {
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
     size_t buf_size = 16 * HTTP_KB;
     char* buf = safe_malloc(buf_size, ep);
-    if (is_error(*ep)) {
+    if (http_is_error(*ep)) {
         return (http_char_buffer_t) { NULL, 0 };
     }
     memset(buf, 0, buf_size);
     DIR* dir = opendir(path);
     if (!dir) {
         perror("opendir");
-        *ep = new_error_error("opendir() failed");
+        *ep = http_new_error_error("opendir() failed");
         return (http_char_buffer_t) { NULL, 0 };
     }
     struct dirent* folder = NULL;
@@ -367,7 +367,7 @@ static http_char_buffer_t build_directory_buffer(const char* path, http_error_t*
                     char* new_buf = realloc(buf, buf_size + grow_by);
                     if (!new_buf) {
                         perror("realloc");
-                        *ep = new_error_error("out of memory (realloc)");
+                        *ep = http_new_error_error("out of memory (realloc)");
                         free(buf);
                         return (http_char_buffer_t) { NULL, 0 };
                     }
@@ -423,15 +423,15 @@ void http_client_serve_file(http_client* client, http_server* server, const char
     if (S_ISDIR(st.st_mode)) {
         // serve directory
         http_char_buffer_t buf = build_directory_buffer(full_rel_path, ep);
-        if (is_error(*ep)) {
-            print_error(*ep);
+        if (http_is_error(*ep)) {
+            http_print_error(*ep);
             http_client_serve_500(client, hdr, ep);
             free(buf.data);
             return;
         }
         size_t final_buffer_size = 512 + buf.len;
         char* final_buffer = safe_malloc(final_buffer_size, ep);
-        if (is_error(*ep)) {
+        if (http_is_error(*ep)) {
             free(buf.data);
             return;
         }
@@ -465,7 +465,7 @@ void http_client_serve_file(http_client* client, http_server* server, const char
             return;
         }
         char* malloced_buf = (char*)safe_malloc(st.st_size, ep);
-        if (is_error(*ep)) {
+        if (http_is_error(*ep)) {
             fclose(file);
             return;
         }
@@ -580,9 +580,9 @@ void* http_thread_pool_main(void* args_ptr) {
 }
 
 http_thread_pool* http_thread_pool_new(http_error_t* ep) {
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
     http_thread_pool* pool = safe_malloc(sizeof(http_thread_pool), ep);
-    if (!is_error(*ep)) {
+    if (!http_is_error(*ep)) {
         log_info("building thread pool of %d threads", HTTP_THREAD_POOL_SIZE);
         memset(pool, 0, sizeof(http_thread_pool));
         atomic_store(&pool->shutdown, false);
@@ -591,35 +591,35 @@ http_thread_pool* http_thread_pool_new(http_error_t* ep) {
             res = pthread_condattr_init(&pool->condition_vars_attrs[i]);
             if (res != 0) {
                 perror("pthread_condattr_init");
-                *ep = new_error_error("failed to init condattr");
+                *ep = http_new_error_error("failed to init condattr");
                 return NULL;
             }
             res = pthread_cond_init(&pool->condition_vars[i], &pool->condition_vars_attrs[i]);
             if (res != 0) {
                 perror("pthread_cond_init");
-                *ep = new_error_error("failed to init cond");
+                *ep = http_new_error_error("failed to init cond");
                 return NULL;
             }
             res = pthread_mutexattr_init(&pool->jobs_mutexes_attrs[i]);
             if (res != 0) {
                 perror("pthread_mutexattr_init");
-                *ep = new_error_error("failed to init mutexattr");
+                *ep = http_new_error_error("failed to init mutexattr");
                 return NULL;
             }
             res = pthread_mutex_init(&pool->jobs_mutexes[i], &pool->jobs_mutexes_attrs[i]);
             if (res != 0) {
                 perror("pthread_mutex_init");
-                *ep = new_error_error("failed to init mutex");
+                *ep = http_new_error_error("failed to init mutex");
                 return NULL;
             }
             res = pthread_attr_init(&pool->attrs[i]);
             if (res != 0) {
                 perror("pthread_attr_init");
-                *ep = new_error_error("failed to init thread attr");
+                *ep = http_new_error_error("failed to init thread attr");
                 return NULL;
             }
             http_thread_pool_main_args* args = safe_malloc(sizeof(http_thread_pool_main_args), ep);
-            if (is_error(*ep)) {
+            if (http_is_error(*ep)) {
                 return NULL;
             }
             args->index = i;
@@ -627,7 +627,7 @@ http_thread_pool* http_thread_pool_new(http_error_t* ep) {
             res = pthread_create(&pool->threads[i], &pool->attrs[i], http_thread_pool_main, args);
             if (res != 0) {
                 perror("pthread_create");
-                *ep = new_error_error("failed to create thread");
+                *ep = http_new_error_error("failed to create thread");
                 return NULL;
             }
         }
@@ -655,7 +655,7 @@ void http_thread_pool_destroy(http_thread_pool* pool) {
 }
 
 void http_thread_pool_add_job(http_thread_pool* pool, http_thread_pool_fn_t job, void* arg, http_error_t* ep) {
-    *ep = new_error_ok();
+    *ep = http_new_error_ok();
     bool found = false;
     static size_t last_i = 0;
     size_t i = (last_i) % HTTP_THREAD_POOL_SIZE;
@@ -678,7 +678,7 @@ void http_thread_pool_add_job(http_thread_pool* pool, http_thread_pool_fn_t job,
     }
     last_i = i;
     if (!found) {
-        *ep = new_error_error("failed to find empty job slot");
+        *ep = http_new_error_error("failed to find empty job slot");
     }
 }
 
