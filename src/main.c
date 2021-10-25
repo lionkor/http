@@ -25,6 +25,95 @@ void sleep_ms(long ms) {
 
 size_t requests_handled = 0;
 
+#define HTTP_THREAD_POOL_SIZE 8
+typedef void (*http_thread_pool_fn_t)(http_server*, http_client*, error_t*);
+typedef struct {
+    pthread_t threads[HTTP_THREAD_POOL_SIZE];
+    pthread_attr_t attrs[HTTP_THREAD_POOL_SIZE];
+    http_thread_pool_fn_t jobs[HTTP_THREAD_POOL_SIZE];
+    pthread_mutex_t jobs_mutexes[HTTP_THREAD_POOL_SIZE];
+    pthread_mutexattr_t jobs_mutexes_attrs[HTTP_THREAD_POOL_SIZE];
+    atomic_bool shutdown;
+} http_thread_pool;
+
+typedef struct {
+    http_thread_pool* pool;
+    size_t index;
+    http_server* server;
+    http_client* client;
+} http_thread_pool_main_args;
+
+void* http_thread_pool_main(void* args_ptr) {
+    http_thread_pool_main_args* args = args_ptr;
+    http_thread_pool* pool = args->pool;
+    size_t index = args->index;
+    while (!atomic_load(&pool->shutdown)) {
+        error_t err = new_error_ok();
+        http_thread_pool_fn_t fn = NULL;
+        pthread_mutex_lock(&pool->jobs_mutexes[index]);
+        if (pool->jobs[index]) {
+            fn = pool->jobs[index];
+            pool->jobs[index] = NULL;
+        }
+        pthread_mutex_unlock(&pool->jobs_mutexes[index]);
+        if (fn) {
+            log_info("found a job in thread %zu", index);
+            fn(args->server, args->client, &err);
+            if (is_error(err)) {
+                log_error("thread %zu, fn %p: %s", index, (void*)fn, err.error);
+            }
+            log_info("done executing job in thread %zu", index);
+        } else {
+            sched_yield();
+        }
+    }
+    free(args);
+    return NULL;
+}
+
+http_thread_pool* http_thread_pool_new(error_t* ep) {
+    http_thread_pool* pool = safe_malloc(sizeof(http_thread_pool), ep);
+    if (!is_error(*ep)) {
+        log_info("building thread pool of %d threads", HTTP_THREAD_POOL_SIZE);
+        memset(pool, 0, sizeof(http_thread_pool));
+        atomic_store(&pool->shutdown, false);
+        for (size_t i = 0; i < HTTP_THREAD_POOL_SIZE; ++i) {
+            pthread_attr_init(&pool->attrs[i]);
+            pthread_create(&pool->threads[i], &pool->attrs[i], http_thread_pool_main, pool);
+            pthread_mutexattr_init(&pool->jobs_mutexes_attrs[i]);
+            pthread_mutex_init(&pool->jobs_mutexes[i], &pool->jobs_mutexes_attrs[i]);
+        }
+    }
+    return pool;
+}
+
+void http_thread_pool_destroy(http_thread_pool* pool) {
+    if (pool) {
+        for (size_t i = 0; i < HTTP_THREAD_POOL_SIZE; ++i) {
+            // TODO join, destroy mutexes, etc.
+        }
+    }
+    free(pool);
+}
+
+void http_thread_pool_add_job(http_thread_pool* pool, http_thread_pool_fn_t job, error_t* ep) {
+    *ep = new_error_ok();
+    bool found = false;
+    for (size_t i = 0; i < HTTP_THREAD_POOL_SIZE; ++i) {
+        pthread_mutex_lock(&pool->jobs_mutexes[i]);
+        if (!pool->jobs[i]) {
+            pool->jobs[i] = job;
+            found = true;
+            pthread_mutex_unlock(&pool->jobs_mutexes[i]);
+            break;
+        }
+        pthread_mutex_unlock(&pool->jobs_mutexes[i]);
+    }
+    if (!found) {
+        *ep = new_error_error("failed to find empty job slot");
+    }
+}
+
 typedef struct {
     pthread_t id;
     pthread_attr_t attr;
