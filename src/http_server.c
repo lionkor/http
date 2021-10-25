@@ -11,7 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-http_server* http_server_new(error_t* ep) {
+http_server* http_server_new(http_error_t* ep) {
     *ep = new_error_ok();
     http_server* server = (http_server*)safe_malloc(sizeof(http_server), ep);
     if (is_error(*ep)) {
@@ -29,7 +29,7 @@ void http_server_free(http_server* server) {
     free(server);
 }
 
-void http_server_start(http_server* server, uint16_t port, error_t* ep) {
+void http_server_start(http_server* server, uint16_t port, http_error_t* ep) {
     assert(server);
     *ep = new_error_ok();
     server->socket = socket(AF_INET, SOCK_STREAM, 0);
@@ -65,7 +65,7 @@ void http_server_start(http_server* server, uint16_t port, error_t* ep) {
     log_info("listening on port %d", port);
 }
 
-void http_server_accept_client(http_server* server, http_client_connect_cb on_connect, error_t* ep) {
+void http_server_accept_client(http_server* server, http_client_connect_cb on_connect, http_error_t* ep) {
     assert(server);
     *ep = new_error_ok();
     http_client* client = (http_client*)safe_malloc(sizeof(http_client), ep);
@@ -104,7 +104,7 @@ static int find_next_crlf_in_buffer(char* buf, size_t size) {
     return -1;
 }
 
-void http_client_receive_header(http_client* client, http_header* header, error_t* ep) {
+void http_client_receive_header(http_client* client, http_header* header, http_error_t* ep) {
     assert(client);
     assert(header);
     *ep = new_error_ok();
@@ -189,7 +189,7 @@ ssize_t http_search_for_string(const char* in, size_t in_size, const char* what,
     return -1;
 }
 
-void http_header_parse_field(http_header* header, char* value_buf, size_t value_buf_size, const char* fieldname, error_t* ep) {
+void http_header_parse_field(http_header* header, char* value_buf, size_t value_buf_size, const char* fieldname, http_error_t* ep) {
     char* buf = header->buffer + header->start_of_headers;
     size_t buf_len = HTTP_HEADER_SIZE_MAX - header->start_of_headers;
     ssize_t index = http_search_for_string(buf, buf_len, fieldname, strlen(fieldname));
@@ -232,7 +232,7 @@ void http_header_parse_field(http_header* header, char* value_buf, size_t value_
     memcpy(value_buf, buf + index + next_colon, result_len);
 }
 
-void http_client_serve(http_client* client, const char* body, size_t body_size, http_header_data* header_data, error_t* ep) {
+void http_client_serve(http_client* client, const char* body, size_t body_size, http_header_data* header_data, http_error_t* ep) {
     *ep = new_error_ok();
     char header[HTTP_HEADER_SIZE_MAX];
     memset(header, 0, sizeof(header));
@@ -266,7 +266,7 @@ void http_client_serve(http_client* client, const char* body, size_t body_size, 
     }
 }
 
-void http_client_set_rcv_timeout(http_client* client, time_t seconds, suseconds_t microseconds, error_t* ep) {
+void http_client_set_rcv_timeout(http_client* client, time_t seconds, suseconds_t microseconds, http_error_t* ep) {
     struct timeval tv;
     tv.tv_sec = seconds;
     tv.tv_usec = microseconds;
@@ -277,7 +277,7 @@ void http_client_set_rcv_timeout(http_client* client, time_t seconds, suseconds_
     }
 }
 
-void http_client_serve_404(http_client* client, const http_header_data* template_hdr_data, error_t* ep) {
+void http_client_serve_404(http_client* client, const http_header_data* template_hdr_data, http_error_t* ep) {
     *ep = new_error_ok();
     http_header_data this_hdr = *template_hdr_data;
     this_hdr.content_type = "text/html";
@@ -286,7 +286,7 @@ void http_client_serve_404(http_client* client, const http_header_data* template
     http_client_serve(client, http_server_err_404_page, http_server_err_404_page_size, &this_hdr, ep);
 }
 
-void http_client_serve_403(http_client* client, const http_header_data* template_hdr_data, error_t* ep) {
+void http_client_serve_403(http_client* client, const http_header_data* template_hdr_data, http_error_t* ep) {
     *ep = new_error_ok();
     http_header_data this_hdr = *template_hdr_data;
     this_hdr.content_type = "text/html";
@@ -295,7 +295,7 @@ void http_client_serve_403(http_client* client, const http_header_data* template
     http_client_serve(client, http_server_err_403_page, http_server_err_403_page_size, &this_hdr, ep);
 }
 
-void http_client_serve_500(http_client* client, const http_header_data* template_hdr_data, error_t* ep) {
+void http_client_serve_500(http_client* client, const http_header_data* template_hdr_data, http_error_t* ep) {
     *ep = new_error_ok();
     http_header_data this_hdr = *template_hdr_data;
     this_hdr.content_type = "text/html";
@@ -308,7 +308,7 @@ static size_t min_size_t(size_t a, size_t b) {
     return a < b ? a : b;
 }
 
-static http_char_buffer_t build_directory_buffer(const char* path, error_t* ep) {
+static http_char_buffer_t build_directory_buffer(const char* path, http_error_t* ep) {
     *ep = new_error_ok();
     size_t buf_size = 16 * HTTP_KB;
     char* buf = safe_malloc(buf_size, ep);
@@ -359,7 +359,7 @@ static const char* get_path_extension(const char* filename) {
     return dot + 1;
 }
 
-void http_client_serve_file(http_client* client, http_server* server, const char* target, const http_header_data* hdr, error_t* ep) {
+void http_client_serve_file(http_client* client, http_server* server, const char* target, const http_header_data* hdr, http_error_t* ep) {
     const char* rel_path = target;
     // validate path is a subpath of our root
     char full_rel_path[256];
@@ -367,9 +367,12 @@ void http_client_serve_file(http_client* client, http_server* server, const char
     memcpy(full_rel_path, server->cwd, min_size_t(sizeof(server->cwd), sizeof(full_rel_path)));
     strncat(full_rel_path, "/", sizeof(full_rel_path) - strlen(full_rel_path) - 1);
     strncat(full_rel_path, rel_path, sizeof(full_rel_path) - strlen(full_rel_path) - 1);
-    //log_info("checking if '%s' is under '%s'", full_rel_path, server->cwd);
-    if (strncmp(full_rel_path, server->cwd, strlen(server->cwd)) != 0) {
-        log_error("attempt to access '%s', which isn't inside '%s' (forbidden)", rel_path, server->cwd);
+    log_info("checking if '%s' is under '%s'", full_rel_path, server->cwd);
+    char resolved[256];
+    memset(resolved, 0, sizeof(resolved));
+    realpath(full_rel_path, resolved);
+    if (strncmp(resolved, server->cwd, strlen(server->cwd)) != 0) {
+        log_error("attempt to access '%s', which isn't inside '%s' (forbidden)", resolved, server->cwd);
         http_client_serve_403(client, hdr, ep);
         return;
     }

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <stdio.h>
-#define _GNU_SOURCE
 #include <unistd.h>
 
 #define log_info(fmt, ...) printf("%d %.20s info: " fmt "\n", gettid(), __func__, __VA_ARGS__)

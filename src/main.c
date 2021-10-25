@@ -24,8 +24,9 @@ void sleep_ms(long ms) {
 }
 
 size_t requests_handled = 0;
-
-#define HTTP_THREAD_POOL_SIZE 8
+#ifndef HTTP_THREAD_POOL_SIZE
+#define HTTP_THREAD_POOL_SIZE 32
+#endif
 typedef void (*http_thread_pool_fn_t)(void*);
 typedef struct {
     pthread_t threads[HTTP_THREAD_POOL_SIZE];
@@ -44,7 +45,7 @@ typedef struct {
     size_t index;
 } http_thread_pool_main_args;
 
-#define HTTP_MS_TO_NS(x) ((x)*1000000)
+#define HTTP_MS_TO_NS(x) ((x)*1000000L)
 
 void* http_thread_pool_main(void* args_ptr) {
     http_thread_pool_main_args* args = args_ptr;
@@ -54,7 +55,12 @@ void* http_thread_pool_main(void* args_ptr) {
     sleep_ms(index * 250);
     while (!atomic_load(&pool->shutdown)) {
         clock_gettime(CLOCK_REALTIME, &wait);
-        wait.tv_sec += 1;
+        if (wait.tv_nsec > 500) {
+            wait.tv_sec += 1;
+            wait.tv_nsec = 0;
+        } else {
+            wait.tv_nsec += HTTP_MS_TO_NS(500);
+        }
         http_thread_pool_fn_t fn = NULL;
         void* arg = NULL;
         pthread_mutex_lock(&pool->jobs_mutexes[index]);
@@ -78,7 +84,7 @@ void* http_thread_pool_main(void* args_ptr) {
     return NULL;
 }
 
-http_thread_pool* http_thread_pool_new(error_t* ep) {
+http_thread_pool* http_thread_pool_new(http_error_t* ep) {
     *ep = new_error_ok();
     http_thread_pool* pool = safe_malloc(sizeof(http_thread_pool), ep);
     if (!is_error(*ep)) {
@@ -143,11 +149,11 @@ void http_thread_pool_destroy(http_thread_pool* pool) {
     free(pool);
 }
 
-void http_thread_pool_add_job(http_thread_pool* pool, http_thread_pool_fn_t job, void* arg, error_t* ep) {
+void http_thread_pool_add_job(http_thread_pool* pool, http_thread_pool_fn_t job, void* arg, http_error_t* ep) {
     *ep = new_error_ok();
     bool found = false;
     static size_t last_i = 0;
-    size_t i = (last_i + 1) % HTTP_THREAD_POOL_SIZE;
+    size_t i = (last_i) % HTTP_THREAD_POOL_SIZE;
     while (!found) {
         if (!pool->jobs[i]) {
             pthread_mutex_lock(&pool->jobs_mutexes[i]);
@@ -181,7 +187,7 @@ void handle_client_request_thread(void* arg_ptr) {
     http_client* client = arg->client;
     http_server* server = arg->server;
     bool keep_alive = false;
-    error_t err = new_error_ok();
+    http_error_t err = new_error_ok();
 
     http_client_set_rcv_timeout(client, 5, 0, &err);
     if (is_error(err)) {
@@ -272,7 +278,7 @@ shutdown_and_free:
 http_thread_pool* pool = NULL;
 
 void handle_client_request(http_server* server, http_client* client) {
-    error_t err = new_error_ok();
+    http_error_t err = new_error_ok();
     handle_request_arg* arg = safe_malloc(sizeof(handle_request_arg), &err);
     if (is_error(err)) {
         print_error(err);
@@ -295,7 +301,7 @@ void handle_signals(int sig) {
 int main(void) {
     signal(SIGINT, handle_signals);
     log_info("%s", "welcome to http-server 1.0");
-    error_t err = new_error_ok();
+    http_error_t err = new_error_ok();
     http_server* server = http_server_new(&err);
     if (is_error(err)) {
         print_error(err);

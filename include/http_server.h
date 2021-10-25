@@ -54,20 +54,20 @@ typedef struct {
 typedef void (*http_client_connect_cb)(http_server*, http_client*);
 
 //TODO most ptr parameters can be const
-http_server* http_server_new(error_t*);
+http_server* http_server_new(http_error_t*);
 void http_server_free(http_server*);
-void http_server_start(http_server*, uint16_t port, error_t*);
-void http_server_accept_client(http_server*, http_client_connect_cb, error_t*);
-void http_client_serve(http_client*, const char* body, size_t body_size, http_header_data*, error_t*);
-void http_client_set_rcv_timeout(http_client*, time_t seconds, suseconds_t microseconds, error_t*);
-void http_client_receive_header(http_client*, http_header*, error_t*);
-void http_header_parse_field(http_header*, char* value_buf, size_t value_buf_size, const char* fieldname, error_t*);
+void http_server_start(http_server*, uint16_t port, http_error_t*);
+void http_server_accept_client(http_server*, http_client_connect_cb, http_error_t*);
+void http_client_serve(http_client*, const char* body, size_t body_size, http_header_data*, http_error_t*);
+void http_client_set_rcv_timeout(http_client*, time_t seconds, suseconds_t microseconds, http_error_t*);
+void http_client_receive_header(http_client*, http_header*, http_error_t*);
+void http_header_parse_field(http_header*, char* value_buf, size_t value_buf_size, const char* fieldname, http_error_t*);
 
 // a few helpers for common error pages
-void http_client_serve_404(http_client* client, const http_header_data* template_hdr_data, error_t*);
-void http_client_serve_403(http_client* client, const http_header_data* template_hdr_data, error_t*);
-void http_client_serve_500(http_client* client, const http_header_data* template_hdr_data, error_t*);
-void http_client_serve_file(http_client*, http_server*, const char* target, const http_header_data* template_hdr_data, error_t*);
+void http_client_serve_404(http_client* client, const http_header_data* template_hdr_data, http_error_t*);
+void http_client_serve_403(http_client* client, const http_header_data* template_hdr_data, http_error_t*);
+void http_client_serve_500(http_client* client, const http_header_data* template_hdr_data, http_error_t*);
+void http_client_serve_file(http_client*, http_server*, const char* target, const http_header_data* template_hdr_data, http_error_t*);
 
 // utils
 
