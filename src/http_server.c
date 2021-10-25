@@ -395,6 +395,7 @@ void http_client_serve_file(http_client* client, http_server* server, const char
             free(buf.data);
             return;
         }
+        memset(final_buffer, 0, final_buffer_size);
         sprintf(final_buffer, "<!DOCTYPE html><html>"
                               "<head><title>"
                               "Listing of '/%s'"
