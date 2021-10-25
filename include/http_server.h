@@ -4,6 +4,7 @@
 
 #include <netinet/in.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 
@@ -69,10 +70,39 @@ void http_client_serve_403(http_client* client, const http_header_data* template
 void http_client_serve_500(http_client* client, const http_header_data* template_hdr_data, http_error_t*);
 void http_client_serve_file(http_client*, http_server*, const char* target, const http_header_data* template_hdr_data, http_error_t*);
 
+#ifndef HTTP_THREAD_POOL_SIZE
+#define HTTP_THREAD_POOL_SIZE 8
+#endif
+typedef void (*http_thread_pool_fn_t)(void*);
+typedef struct {
+    pthread_t threads[HTTP_THREAD_POOL_SIZE];
+    pthread_attr_t attrs[HTTP_THREAD_POOL_SIZE];
+    http_thread_pool_fn_t jobs[HTTP_THREAD_POOL_SIZE];
+    void* args[HTTP_THREAD_POOL_SIZE];
+    pthread_mutex_t jobs_mutexes[HTTP_THREAD_POOL_SIZE];
+    pthread_mutexattr_t jobs_mutexes_attrs[HTTP_THREAD_POOL_SIZE];
+    pthread_cond_t condition_vars[HTTP_THREAD_POOL_SIZE];
+    pthread_condattr_t condition_vars_attrs[HTTP_THREAD_POOL_SIZE];
+    atomic_bool shutdown;
+} http_thread_pool;
+
+typedef struct {
+    http_thread_pool* pool;
+    size_t index;
+} http_thread_pool_main_args;
+
+#define HTTP_MS_TO_NS(x) ((x)*1000000L)
+
+http_thread_pool* http_thread_pool_new(http_error_t* ep);
+void* http_thread_pool_main(void* args_ptr);
+void http_thread_pool_destroy(http_thread_pool* pool);
+void http_thread_pool_add_job(http_thread_pool* pool, http_thread_pool_fn_t job, void* arg, http_error_t* ep);
+
 // utils
 
 // index or -1 if not found
 ssize_t http_search_for_string(const char* in, size_t in_size, const char* what, size_t what_size);
+void http_sleep_ms(long ms);
 
 extern const char http_server_rootpage[];
 extern const size_t http_server_rootpage_size;
