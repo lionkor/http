@@ -338,6 +338,19 @@ static http_char_buffer_t build_directory_buffer(const char* path, http_error_t*
                     maybe_slash = "/";
                 }
                 n = sprintf(line, "<li><a href=\"%s%s\">%s</a></li>", folder->d_name, maybe_slash, folder->d_name);
+                if (strlen(line) < buf_size - written) {
+                    size_t grow_by = 16 * HTTP_KB;
+                    char* new_buf = realloc(buf, buf_size + grow_by);
+                    if (!new_buf) {
+                        perror("realloc");
+                        *ep = new_error_error("out of memory (realloc)");
+                        free(buf);
+                        return (http_char_buffer_t) { NULL, 0 };
+                    }
+                    buf = new_buf;
+                    memset(new_buf + buf_size, 0, grow_by);
+                    buf_size += grow_by;
+                }
                 memcpy(buf + written, line, strlen(line));
                 written += n;
             }

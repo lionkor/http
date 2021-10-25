@@ -25,7 +25,7 @@ void sleep_ms(long ms) {
 
 size_t requests_handled = 0;
 #ifndef HTTP_THREAD_POOL_SIZE
-#define HTTP_THREAD_POOL_SIZE 32
+#define HTTP_THREAD_POOL_SIZE 8
 #endif
 typedef void (*http_thread_pool_fn_t)(void*);
 typedef struct {
@@ -298,8 +298,26 @@ void handle_signals(int sig) {
     }
 }
 
-int main(void) {
+const char s_usage[] = "<port>";
+
+int main(int argc, char** argv) {
     signal(SIGINT, handle_signals);
+    if (argc != 2) {
+        log_error("%s: invalid arguments", argv[0]);
+        log_info("Usage:\n%s %s", argv[0], s_usage);
+        return __LINE__;
+    }
+    // parse port
+    unsigned int port = 0;
+    int n = sscanf(argv[1], "%u", &port);
+    if (n != 1) {
+        log_error("%s", "failed to parse <port> as number");
+        return __LINE__;
+    }
+    if (port > UINT16_MAX) {
+        log_error("port %u outside allowed range (%u-%u)", port, 0u, UINT16_MAX);
+        return __LINE__;
+    }
     log_info("%s", "welcome to http-server 1.0");
     http_error_t err = new_error_ok();
     http_server* server = http_server_new(&err);
@@ -314,7 +332,7 @@ int main(void) {
     }
     server->backlog = 10;
     server->show_root_page = false;
-    http_server_start(server, 11000, &err);
+    http_server_start(server, port, &err);
     if (is_error(err)) {
         print_error(err);
         return __LINE__;
