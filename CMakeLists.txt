@@ -1,6 +1,6 @@
 project(http)
 
-add_compile_options(-Wall -Wextra -pedantic -Og -g -pthread)
+add_compile_options(-Wall -Wextra -pedantic -O3 -g -pthread)
 
 add_executable(http-server 
     src/main.c
