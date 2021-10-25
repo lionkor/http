@@ -143,7 +143,17 @@ http_thread_pool* http_thread_pool_new(http_error_t* ep) {
 void http_thread_pool_destroy(http_thread_pool* pool) {
     if (pool) {
         for (size_t i = 0; i < HTTP_THREAD_POOL_SIZE; ++i) {
-            // TODO join, destroy mutexes, etc.
+            int detachstate = 0;
+            pthread_attr_getdetachstate(&pool->attrs[i], &detachstate);
+            if (detachstate == PTHREAD_CREATE_JOINABLE) {
+                log_info("joining thread %lu", pool->threads[i]);
+                pthread_join(pool->threads[i], NULL);
+            }
+            pthread_mutexattr_destroy(&pool->jobs_mutexes_attrs[i]);
+            pthread_mutex_destroy(&pool->jobs_mutexes[i]);
+            pthread_cond_destroy(&pool->condition_vars[i]);
+            pthread_condattr_destroy(&pool->condition_vars_attrs[i]);
+            pthread_attr_destroy(&pool->attrs[i]);
         }
     }
     free(pool);
@@ -293,7 +303,7 @@ void handle_client_request(http_server* server, http_client* client) {
 void handle_signals(int sig) {
     switch (sig) {
     case SIGINT:
-        exit(2);
+        atomic_store(&pool->shutdown, true);
         break;
     }
 }
@@ -337,12 +347,13 @@ int main(int argc, char** argv) {
         print_error(err);
         return __LINE__;
     }
-    for (;;) {
+    while (!atomic_load(&pool->shutdown)) {
         http_server_accept_client(server, handle_client_request, &err);
         if (is_error(err)) {
             print_error(err);
         }
     }
     http_server_free(server);
+    http_thread_pool_destroy(pool);
     log_info("%s", "http-server terminated");
 }

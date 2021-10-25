@@ -7,6 +7,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <netdb.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -27,6 +28,11 @@ http_server* http_server_new(http_error_t* ep) {
 
 void http_server_free(http_server* server) {
     free(server);
+}
+
+static void handle_sigalarm(int sig) {
+    (void)sig;
+    // do nothing
 }
 
 void http_server_start(http_server* server, uint16_t port, http_error_t* ep) {
@@ -71,6 +77,24 @@ void http_server_accept_client(http_server* server, http_client_connect_cb on_co
     http_client* client = (http_client*)safe_malloc(sizeof(http_client), ep);
     memset(client, 0, sizeof(http_client));
     if (is_error(*ep)) {
+        return;
+    }
+    fd_set set;
+    FD_ZERO(&set);
+    FD_SET(server->socket, &set);
+    struct timeval timeout;
+    timeout.tv_sec = 3;
+    timeout.tv_usec = 0;
+    int select_ret = select(server->socket + 1, &set, NULL, NULL, NULL);
+    if (select_ret == 0) {
+        // timed out
+        *ep = new_error_error("server socket timed out for accept()");
+        free(client);
+        return;
+    } else if (select_ret < 0) {
+        perror("select");
+        *ep = new_error_error("select() failed");
+        free(client);
         return;
     }
     client->socket = accept(server->socket, (struct sockaddr*)&client->address, &client->address_len);
